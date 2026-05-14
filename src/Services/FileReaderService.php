@@ -16,15 +16,15 @@ class FileReaderService
 
     public function readHeaders(string $filePath, string $disk, int $headerRow = 1): array
     {
-        $localPath = $this->localPath($filePath, $disk);
-
-        foreach ($this->rows($localPath) as $index => $row) {
-            if ($index + 1 === $headerRow) {
-                return array_map(static fn ($v) => is_string($v) ? trim($v) : (string) $v, $row);
+        return $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headerRow): array {
+            foreach ($this->rows($localPath) as $index => $row) {
+                if ($index + 1 === $headerRow) {
+                    return array_map(static fn ($v) => is_string($v) ? trim($v) : (string) $v, $row);
+                }
             }
-        }
 
-        return [];
+            return [];
+        });
     }
 
     /**
@@ -40,46 +40,48 @@ class FileReaderService
         int $chunkSize,
         callable $callback,
     ): void {
-        $localPath = $this->localPath($filePath, $disk);
-        $dataRow = 0;
-        $chunk = [];
+        $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headers, $headerRow, $chunkSize, $callback): void {
+            $dataRow = 0;
+            $chunk = [];
 
-        foreach ($this->rows($localPath) as $rowIndex => $raw) {
-            if ($rowIndex < $headerRow) {
-                continue;
+            foreach ($this->rows($localPath) as $rowIndex => $raw) {
+                if ($rowIndex < $headerRow) {
+                    continue;
+                }
+
+                $dataRow++;
+                $mapped = [];
+                foreach ($headers as $colIndex => $header) {
+                    $mapped[$header] = $raw[$colIndex] ?? null;
+                }
+
+                $chunk[] = ['row_number' => $rowIndex + 1, 'data' => $mapped];
+
+                if (count($chunk) >= $chunkSize) {
+                    $callback($chunk, $dataRow - count($chunk) + 1);
+                    $chunk = [];
+                }
             }
 
-            $dataRow++;
-            $mapped = [];
-            foreach ($headers as $colIndex => $header) {
-                $mapped[$header] = $raw[$colIndex] ?? null;
-            }
-
-            $chunk[] = ['row_number' => $rowIndex + 1, 'data' => $mapped];
-
-            if (count($chunk) >= $chunkSize) {
+            if (! empty($chunk)) {
                 $callback($chunk, $dataRow - count($chunk) + 1);
-                $chunk = [];
             }
-        }
-
-        if (! empty($chunk)) {
-            $callback($chunk, $dataRow - count($chunk) + 1);
-        }
+        });
     }
 
     public function countRows(string $filePath, string $disk, int $headerRow = 1): int
     {
-        $localPath = $this->localPath($filePath, $disk);
-        $count = 0;
+        return $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headerRow): int {
+            $count = 0;
 
-        foreach ($this->rows($localPath) as $index => $_) {
-            if ($index >= $headerRow) {
-                $count++;
+            foreach ($this->rows($localPath) as $index => $_) {
+                if ($index >= $headerRow) {
+                    $count++;
+                }
             }
-        }
 
-        return $count;
+            return $count;
+        });
     }
 
     // ── Unified row generator ─────────────────────────────────────────────
@@ -136,8 +138,39 @@ class FileReaderService
             throw new \RuntimeException("Cannot open worksheet at '{$sheetPath}' inside XLSX.");
         }
 
-        $reader = $this->xmlReaderFromStream($wsStream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($wsStream);
 
+        try {
+            yield from $this->iterateWorksheet(
+                $reader,
+                $sharedStrings,
+                $xfNumFmtIds,
+                $customNumFmts,
+                $date1904,
+            );
+        } finally {
+            // Deterministic cleanup — replaces the deferred
+            // register_shutdown_function() that previously leaked one
+            // tempfile per sidecar across the lifetime of a queue worker.
+            $reader->close();
+            $zip->close();
+            if ($tmpPath !== null && file_exists($tmpPath)) {
+                @unlink($tmpPath);
+            }
+        }
+    }
+
+    /**
+     * Stream rows from a pre-opened worksheet XMLReader. Pure iteration —
+     * no resource ownership so the caller can dispose deterministically.
+     */
+    private function iterateWorksheet(
+        \XMLReader $reader,
+        array $sharedStrings,
+        array $xfNumFmtIds,
+        array $customNumFmts,
+        bool $date1904,
+    ): \Generator {
         $rowIndex = -1;
         $currentCells = [];
         $maxCol = -1;
@@ -221,9 +254,6 @@ class FileReaderService
                     break;
             }
         }
-
-        $reader->close();
-        $zip->close();
     }
 
     private function resolveCellValue(
@@ -274,39 +304,42 @@ class FileReaderService
             return [[], []];
         }
 
-        $reader = $this->xmlReaderFromStream($stream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($stream);
         $xfNumFmtIds = [];
         $customNumFmts = [];
         $inCellXfs = false;
 
-        while ($reader->read()) {
-            $type = $reader->nodeType;
-            $name = $reader->localName;
+        try {
+            while ($reader->read()) {
+                $type = $reader->nodeType;
+                $name = $reader->localName;
 
-            if ($type === \XMLReader::ELEMENT && $name === 'numFmt') {
-                $id = (int) ($reader->getAttribute('numFmtId') ?? -1);
-                $code = $reader->getAttribute('formatCode') ?? '';
-                if ($id >= 164) {
-                    $customNumFmts[$id] = $code;
+                if ($type === \XMLReader::ELEMENT && $name === 'numFmt') {
+                    $id = (int) ($reader->getAttribute('numFmtId') ?? -1);
+                    $code = $reader->getAttribute('formatCode') ?? '';
+                    if ($id >= 164) {
+                        $customNumFmts[$id] = $code;
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            if ($type === \XMLReader::ELEMENT && $name === 'cellXfs') {
-                $inCellXfs = true;
-                continue;
-            }
-            if ($type === \XMLReader::END_ELEMENT && $name === 'cellXfs') {
-                $inCellXfs = false;
-                continue;
-            }
+                if ($type === \XMLReader::ELEMENT && $name === 'cellXfs') {
+                    $inCellXfs = true;
+                    continue;
+                }
+                if ($type === \XMLReader::END_ELEMENT && $name === 'cellXfs') {
+                    $inCellXfs = false;
+                    continue;
+                }
 
-            if ($inCellXfs && $type === \XMLReader::ELEMENT && $name === 'xf') {
-                $xfNumFmtIds[] = (int) ($reader->getAttribute('numFmtId') ?? 0);
+                if ($inCellXfs && $type === \XMLReader::ELEMENT && $name === 'xf') {
+                    $xfNumFmtIds[] = (int) ($reader->getAttribute('numFmtId') ?? 0);
+                }
             }
+        } finally {
+            $reader->close();
+            @unlink($tmpPath);
         }
-
-        $reader->close();
 
         return [$xfNumFmtIds, $customNumFmts];
     }
@@ -369,18 +402,21 @@ class FileReaderService
             return false;
         }
 
-        $reader = $this->xmlReaderFromStream($stream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($stream);
         $is1904 = false;
 
-        while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'workbookPr') {
-                $val = $reader->getAttribute('date1904') ?? '0';
-                $is1904 = $val === '1' || strtolower($val) === 'true';
-                break;
+        try {
+            while ($reader->read()) {
+                if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'workbookPr') {
+                    $val = $reader->getAttribute('date1904') ?? '0';
+                    $is1904 = $val === '1' || strtolower($val) === 'true';
+                    break;
+                }
             }
+        } finally {
+            $reader->close();
+            @unlink($tmpPath);
         }
-
-        $reader->close();
 
         return $is1904;
     }
@@ -420,18 +456,21 @@ class FileReaderService
             return null;
         }
 
-        $reader = $this->xmlReaderFromStream($stream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($stream);
         $rId = null;
 
-        while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'sheet') {
-                $rId = $reader->getAttribute('r:id')
-                    ?? $reader->getAttributeNs('id', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-                break;
+        try {
+            while ($reader->read()) {
+                if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'sheet') {
+                    $rId = $reader->getAttribute('r:id')
+                        ?? $reader->getAttributeNs('id', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+                    break;
+                }
             }
+        } finally {
+            $reader->close();
+            @unlink($tmpPath);
         }
-
-        $reader->close();
 
         return $rId;
     }
@@ -444,35 +483,67 @@ class FileReaderService
             return null;
         }
 
-        $reader = $this->xmlReaderFromStream($stream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($stream);
         $target = null;
 
-        while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'Relationship') {
-                if ($reader->getAttribute('Id') === $rId) {
-                    $target = $reader->getAttribute('Target');
-                    break;
+        try {
+            while ($reader->read()) {
+                if ($reader->nodeType === \XMLReader::ELEMENT && $reader->localName === 'Relationship') {
+                    if ($reader->getAttribute('Id') === $rId) {
+                        $target = $reader->getAttribute('Target');
+                        break;
+                    }
                 }
             }
+        } finally {
+            $reader->close();
+            @unlink($tmpPath);
         }
-
-        $reader->close();
 
         return $target;
     }
 
-    private function xmlReaderFromStream($stream): \XMLReader
+    /**
+     * Spool a ZipArchive sub-stream into a tempfile and return both the
+     * XMLReader and the tempfile path so the caller can dispose deterministically.
+     *
+     * The XMLReader extension cannot read from arbitrary PHP streams (and
+     * the streams returned by ZipArchive::getStream() are not seekable),
+     * so a tempfile is unavoidable today. The worksheet stream is copied
+     * chunk-by-chunk via stream_copy_to_stream to avoid loading the entire
+     * XML into RAM (previously: stream_get_contents() — full-file slurp).
+     *
+     * TODO: investigate switching to a true streaming XMLReader::open()
+     *       loop yielding rows for the worksheet payload — left as a
+     *       follow-up so the deterministic cleanup fix lands first.
+     *
+     * @return array{0: \XMLReader, 1: string} Reader and absolute tempfile path
+     */
+    private function xmlReaderFromStream($stream): array
     {
+        $tmpPath = tempnam(sys_get_temp_dir(), 'xlsx_');
+        $tmpHandle = fopen($tmpPath, 'wb');
+
+        if ($tmpHandle === false) {
+            fclose($stream);
+            @unlink($tmpPath);
+            throw new \RuntimeException("Cannot open tempfile {$tmpPath} for XLSX spooling.");
+        }
+
+        try {
+            stream_copy_to_stream($stream, $tmpHandle);
+        } finally {
+            fclose($tmpHandle);
+            fclose($stream);
+        }
+
         $reader = new \XMLReader;
+        if (! $reader->open($tmpPath)) {
+            @unlink($tmpPath);
+            throw new \RuntimeException("XMLReader could not open spooled XLSX part at {$tmpPath}.");
+        }
 
-        $tmp = tempnam(sys_get_temp_dir(), 'xlsx_');
-        file_put_contents($tmp, stream_get_contents($stream));
-        fclose($stream);
-
-        $reader->open($tmp);
-        register_shutdown_function(static fn () => @unlink($tmp));
-
-        return $reader;
+        return [$reader, $tmpPath];
     }
 
     private function readSharedStrings(\ZipArchive $zip): array
@@ -483,27 +554,30 @@ class FileReaderService
             return [];
         }
 
-        $reader = $this->xmlReaderFromStream($stream);
+        [$reader, $tmpPath] = $this->xmlReaderFromStream($stream);
         $sharedStrings = [];
         $texts = [];
         $inT = false;
 
-        while ($reader->read()) {
-            $type = $reader->nodeType;
-            $name = $reader->localName;
+        try {
+            while ($reader->read()) {
+                $type = $reader->nodeType;
+                $name = $reader->localName;
 
-            if ($type === \XMLReader::ELEMENT && $name === 't') {
-                $inT = true;
-            } elseif ($type === \XMLReader::TEXT && $inT) {
-                $texts[] = $reader->value;
-                $inT = false;
-            } elseif ($type === \XMLReader::END_ELEMENT && $name === 'si') {
-                $sharedStrings[] = implode('', $texts);
-                $texts = [];
+                if ($type === \XMLReader::ELEMENT && $name === 't') {
+                    $inT = true;
+                } elseif ($type === \XMLReader::TEXT && $inT) {
+                    $texts[] = $reader->value;
+                    $inT = false;
+                } elseif ($type === \XMLReader::END_ELEMENT && $name === 'si') {
+                    $sharedStrings[] = implode('', $texts);
+                    $texts = [];
+                }
             }
+        } finally {
+            $reader->close();
+            @unlink($tmpPath);
         }
-
-        $reader->close();
 
         return $sharedStrings;
     }
@@ -520,8 +594,65 @@ class FileReaderService
         return $result - 1;
     }
 
-    private function localPath(string $filePath, string $disk): string
+    /**
+     * Resolve a usable local filesystem path for $filePath on $disk and pass
+     * it to the given $work closure. If the disk's driver implements path()
+     * the file is read in place; otherwise (S3, GCS, Azure, in-memory…)
+     * its readStream() is spooled to a tempfile that is unlinked in finally.
+     *
+     * @template T
+     *
+     * @param  callable(string $localPath): T  $work
+     * @return T
+     */
+    private function withLocalPath(string $filePath, string $disk, callable $work): mixed
     {
-        return Storage::disk($disk)->path($filePath);
+        $filesystem = Storage::disk($disk);
+        $tmpPath = null;
+
+        try {
+            $localPath = $filesystem->path($filePath);
+        } catch (\Throwable $e) {
+            // path() is not supported on this driver — fall through to
+            // the readStream() spooling path below.
+            $localPath = null;
+        }
+
+        if ($localPath === null) {
+            $stream = $filesystem->readStream($filePath);
+
+            if ($stream === false || $stream === null) {
+                throw new \RuntimeException(
+                    "Cannot open stream for '{$filePath}' on disk '{$disk}'.",
+                );
+            }
+
+            $extension = pathinfo($filePath, PATHINFO_EXTENSION) ?: 'tmp';
+            $tmpPath = tempnam(sys_get_temp_dir(), 'ie_').'.'.$extension;
+            $tmpHandle = fopen($tmpPath, 'wb');
+
+            if ($tmpHandle === false) {
+                fclose($stream);
+                @unlink($tmpPath);
+                throw new \RuntimeException("Cannot open spool tempfile {$tmpPath}.");
+            }
+
+            try {
+                stream_copy_to_stream($stream, $tmpHandle);
+            } finally {
+                fclose($tmpHandle);
+                fclose($stream);
+            }
+
+            $localPath = $tmpPath;
+        }
+
+        try {
+            return $work($localPath);
+        } finally {
+            if ($tmpPath !== null && file_exists($tmpPath)) {
+                @unlink($tmpPath);
+            }
+        }
     }
 }
