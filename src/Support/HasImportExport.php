@@ -2,9 +2,6 @@
 
 namespace Umutcangungormus\LaravelImportExport\Support;
 
-use Umutcangungormus\LaravelImportExport\Contracts\Importable;
-use Umutcangungormus\LaravelImportExport\Contracts\ImportProcessorInterface;
-use Umutcangungormus\LaravelImportExport\Models\ImportSession;
 
 /**
  * HasImportExport
@@ -62,18 +59,13 @@ trait HasImportExport
         return config('import-export.models.'.static::class, []);
     }
 
-    private static function makeProcessor(): ?ImportProcessorInterface
-    {
-        $class = static::modelConfig()['processor'] ?? null;
-
-        if (! $class || ! class_exists($class)) {
-            return null;
-        }
-
-        return app($class);
-    }
-
     // ── Importable ────────────────────────────────────────────────────────
+    //
+    // Row-level lifecycle hooks (prepare / after) live exclusively on
+    // ImportProcessorInterface, the documented public extension point —
+    // see README "Extending the Importer". ProcessImportJob always resolves
+    // the processor from config('import-export.models.<class>.processor')
+    // and never calls back into the model's trait.
 
     public static function getImportableFields(): array
     {
@@ -103,39 +95,6 @@ trait HasImportExport
     public static function getImportUniqueBy(): ?array
     {
         return static::modelConfig()['unique_by'] ?? null;
-    }
-
-    public static function prepareForImport(ImportSession $importSession, array $data): array
-    {
-        $cfg = static::modelConfig();
-
-        // Delegate to the dedicated processor if one is configured
-        if ($processor = static::makeProcessor()) {
-            $data = $processor->prepare($importSession, $data);
-        }
-
-        // Apply per-field defaults and transforms defined in field config
-        foreach ($cfg['fields'] ?? [] as $field => $def) {
-            if (! isset($data[$field]) && array_key_exists('default', $def)) {
-                $data[$field] = $def['default'];
-            }
-
-            if (isset($data[$field], $def['transform']) && is_callable($def['transform'])) {
-                $data[$field] = call_user_func($def['transform'], $data[$field]);
-            }
-        }
-
-        return $data;
-    }
-
-    public static function afterImport(Importable $model, array $data): void
-    {
-        /** @var ImportProcessorInterface|null $processor */
-        $processor = static::makeProcessor();
-
-        if ($processor) {
-            $processor->after($model, $data);
-        }
     }
 
     // ── Exportable ────────────────────────────────────────────────────────

@@ -2,10 +2,13 @@
 
 namespace Umutcangungormus\LaravelImportExport\Contracts;
 
-use Umutcangungormus\LaravelImportExport\Models\ImportSession;
-
 /**
  * Contract for Eloquent models that participate in the import pipeline.
+ *
+ * The package's row-level lifecycle hooks live on
+ * {@see ImportProcessorInterface} (the documented public extension point).
+ * Model-level concerns are limited to declaring which fields are importable
+ * and how rows are identified for updateOrCreate.
  *
  * Use {@see \Umutcangungormus\LaravelImportExport\Support\HasImportExport}
  * to get a config-driven default implementation.
@@ -33,15 +36,4 @@ interface Importable
      * @return string[]|null
      */
     public static function getImportUniqueBy(): ?array;
-
-    /**
-     * Optionally transform the full row array before individual field processing.
-     * The ImportSession carries contextual data (tenant id, options, etc.)
-     */
-    public static function prepareForImport(ImportSession $importSession, array $data): array;
-
-    /**
-     * Hook called after each row is successfully saved.
-     */
-    public static function afterImport(Importable $model, array $data): void;
 }

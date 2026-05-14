@@ -125,14 +125,7 @@ class ImportExportService
     {
         $session = ImportSession::findOrFail($id);
 
-        if (method_exists($this->failureHandler, 'summary')) {
-            return $this->failureHandler->summary($session);
-        }
-
-        return [
-            'total_failures' => $session->failures()->count(),
-            'error_types' => [],
-        ];
+        return $this->failureHandler->summary($session);
     }
 
     public function exportFailures(int $id): StreamedResponse

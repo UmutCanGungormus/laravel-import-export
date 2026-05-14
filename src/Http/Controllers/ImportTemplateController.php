@@ -9,11 +9,13 @@ use Umutcangungormus\LaravelImportExport\Http\Requests\CreateTemplateRequest;
 use Umutcangungormus\LaravelImportExport\Http\Requests\UpdateTemplateRequest;
 use Umutcangungormus\LaravelImportExport\Http\Resources\ImportMappingTemplateResource;
 use Umutcangungormus\LaravelImportExport\Services\MappingTemplateService;
+use Umutcangungormus\LaravelImportExport\Tenancy\TenantResolverContract;
 
 class ImportTemplateController extends Controller
 {
     public function __construct(
         private MappingTemplateService $templateService,
+        private TenantResolverContract $tenantResolver,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -42,7 +44,7 @@ class ImportTemplateController extends Controller
         $template = $this->templateService->create(
             $request->toDto(),
             userId: $request->user()?->getAuthIdentifier(),
-            tenantId: null,
+            tenantId: $this->tenantResolver->currentTenantId(),
         );
 
         return response()->json([
