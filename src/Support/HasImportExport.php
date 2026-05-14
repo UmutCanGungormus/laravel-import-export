@@ -193,7 +193,7 @@ trait HasImportExport
             'date' => $value instanceof \Carbon\Carbon ? $value->format('Y-m-d') : $value,
             'datetime' => $value instanceof \Carbon\Carbon ? $value->format('Y-m-d H:i:s') : $value,
             'time' => $value instanceof \Carbon\Carbon ? $value->format('H:i:s') : $value,
-            'boolean' => $value ? __('import-export::messages.export.yes') : __('import-export::messages.export.no'),
+            'boolean' => $value ? __('import-export::export.yes') : __('import-export::export.no'),
             'number' => is_numeric($value) ? number_format((float) $value, 2) : $value,
             'currency' => is_numeric($value) ? number_format((float) $value, 2, '.', ',') : $value,
             default => $value,
