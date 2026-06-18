@@ -69,6 +69,65 @@ class FileReaderService
         });
     }
 
+    /**
+     * Iterate a contiguous slice of data rows as header-keyed arrays.
+     *
+     * Used by ProcessImportChunkJob so each queued job streams only its own
+     * [$startDataRow, $startDataRow + $limit) window (1-based among data
+     * rows, i.e. rows after the header). Iteration stops as soon as the
+     * window ends — the rest of a multi-thousand-row file is never read.
+     *
+     * @param  callable(array $chunk): void  $callback
+     */
+    public function readRange(
+        string $filePath,
+        string $disk,
+        array $headers,
+        int $headerRow,
+        int $startDataRow,
+        int $limit,
+        int $chunkSize,
+        callable $callback,
+    ): void {
+        $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headers, $headerRow, $startDataRow, $limit, $chunkSize, $callback): void {
+            $endDataRow = $startDataRow + $limit - 1;
+            $dataRow = 0;
+            $chunk = [];
+
+            foreach ($this->rows($localPath) as $rowIndex => $raw) {
+                if ($rowIndex < $headerRow) {
+                    continue;
+                }
+
+                $dataRow++;
+
+                if ($dataRow < $startDataRow) {
+                    continue;
+                }
+
+                if ($dataRow > $endDataRow) {
+                    break; // past this job's window — stop reading the file
+                }
+
+                $mapped = [];
+                foreach ($headers as $colIndex => $header) {
+                    $mapped[$header] = $raw[$colIndex] ?? null;
+                }
+
+                $chunk[] = ['row_number' => $rowIndex + 1, 'data' => $mapped];
+
+                if (count($chunk) >= $chunkSize) {
+                    $callback($chunk);
+                    $chunk = [];
+                }
+            }
+
+            if (! empty($chunk)) {
+                $callback($chunk);
+            }
+        });
+    }
+
     public function countRows(string $filePath, string $disk, int $headerRow = 1): int
     {
         return $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headerRow): int {
@@ -99,6 +158,16 @@ class FileReaderService
 
     // ── CSV ───────────────────────────────────────────────────────────────
 
+    /**
+     * Stream CSV rows one-by-one via fgetcsv.
+     * Memory usage: O(1) — only one row in RAM at a time.
+     *
+     * The delimiter is sniffed from the first line rather than hard-coded:
+     * Excel saved as CSV under a Turkish/European locale uses ';' (the locale
+     * list separator), and tab/pipe exports also occur. A UTF-8 BOM (written
+     * by Excel on Windows) is stripped from the first line so the first header
+     * is not polluted with \xEF\xBB\xBF. Every cell is forced to valid UTF-8.
+     */
     private function csvRows(string $path): \Generator
     {
         $handle = fopen($path, 'r');
@@ -108,13 +177,78 @@ class FileReaderService
         }
 
         try {
+            $firstLine = fgets($handle);
+
+            if ($firstLine === false) {
+                return; // empty file
+            }
+
+            $firstLine = $this->stripBom($firstLine);
+            $delimiter = $this->detectCsvDelimiter($firstLine);
+
             $index = 0;
-            while (($row = fgetcsv($handle)) !== false) {
-                yield $index++ => $row;
+            yield $index++ => $this->normalizeCsvRow(str_getcsv(rtrim($firstLine, "\r\n"), $delimiter));
+
+            while (($row = fgetcsv($handle, null, $delimiter)) !== false) {
+                yield $index++ => $this->normalizeCsvRow($row);
             }
         } finally {
             fclose($handle);
         }
+    }
+
+    /**
+     * Sniff the field delimiter from the header line by counting candidate
+     * separators outside quoted segments. Falls back to ',' when ambiguous.
+     */
+    private function detectCsvDelimiter(string $line): string
+    {
+        $line = rtrim($line, "\r\n");
+
+        // Drop quoted segments so delimiters inside quotes don't skew the count
+        $unquoted = preg_replace('/"(?:[^"]|"")*"/', '', $line) ?? $line;
+
+        $counts = [
+            ',' => substr_count($unquoted, ','),
+            ';' => substr_count($unquoted, ';'),
+            "\t" => substr_count($unquoted, "\t"),
+            '|' => substr_count($unquoted, '|'),
+        ];
+
+        arsort($counts);
+        $best = array_key_first($counts);
+
+        return $counts[$best] > 0 ? $best : ',';
+    }
+
+    /**
+     * Strip a leading UTF-8 BOM (Excel on Windows prepends \xEF\xBB\xBF).
+     */
+    private function stripBom(string $value): string
+    {
+        return str_starts_with($value, "\xEF\xBB\xBF") ? substr($value, 3) : $value;
+    }
+
+    /**
+     * Force every cell in a CSV row to valid UTF-8.
+     *
+     * Excel saved-as-CSV on a Turkish/European Windows locale writes bytes in
+     * Windows-1252 or ISO-8859-9, which corrupt Eloquent's json_encode cast
+     * for `detected_headers`. mb_convert_encoding tries the candidate list in
+     * order and re-encodes from whichever interpretation produces valid UTF-8;
+     * already-valid UTF-8 input is returned unchanged.
+     *
+     * @param  list<string|null>  $row
+     * @return list<string|null>
+     */
+    private function normalizeCsvRow(array $row): array
+    {
+        return array_map(
+            fn ($v) => is_string($v)
+                ? mb_convert_encoding($v, 'UTF-8', 'UTF-8, Windows-1252, ISO-8859-9, ISO-8859-1')
+                : $v,
+            $row,
+        );
     }
 
     // ── XLSX ──────────────────────────────────────────────────────────────

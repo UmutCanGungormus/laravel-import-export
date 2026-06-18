@@ -52,6 +52,14 @@ return [
     |--------------------------------------------------------------------------
     */
     'chunk_size' => env('IMPORT_EXPORT_CHUNK_SIZE', 1000),
+
+    // Rows per queued ProcessImportChunkJob. ProcessImportJob (the planner)
+    // splits the file into a Bus batch — one chunk job per this many data
+    // rows — so each job stays short (survives worker timeouts), row failures
+    // are isolated to a slice, and progress is real. FinalizeImportJob runs
+    // any post-batch pass once the batch completes.
+    'batch_size' => (int) env('IMPORT_EXPORT_BATCH_SIZE', 500),
+
     'job_timeout' => env('IMPORT_EXPORT_JOB_TIMEOUT', 600),
     'job_tries' => env('IMPORT_EXPORT_JOB_TRIES', 3),
 
@@ -63,6 +71,12 @@ return [
     | Connection + queue name used by ProcessImportJob. `null` falls back to
     | the application defaults. Horizon-compatible without any direct
     | Horizon dependency.
+    |
+    | For large imports, point `connection` at a dedicated queue connection
+    | whose `retry_after` (see config/queue.php) is larger than `job_timeout`,
+    | so a still-running import is never silently re-dispatched onto a second
+    | worker. Keep `job_tries` at 1 for that connection: a half-finished bulk
+    | import must not auto-retry, which would double-process rows.
     */
     'queue' => [
         'connection' => env('IMPORT_EXPORT_QUEUE_CONNECTION'),

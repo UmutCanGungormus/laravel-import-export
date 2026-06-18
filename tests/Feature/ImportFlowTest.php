@@ -1,7 +1,7 @@
 <?php
 
-use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Umutcangungormus\LaravelImportExport\Actions\InitializeImportAction;
 use Umutcangungormus\LaravelImportExport\Actions\StartImportAction;
@@ -24,6 +24,25 @@ beforeEach(function () {
         $t->decimal('price', 8, 2)->nullable();
         $t->timestamps();
     });
+
+    // ProcessImportJob now fans out into a Bus batch (ProcessImportChunkJob)
+    // with FinalizeImportJob as the completion callback. On the sync queue
+    // driver those jobs run inline, but the database batch repository still
+    // needs its backing table.
+    if (! Schema::hasTable('job_batches')) {
+        Schema::create('job_batches', function ($t) {
+            $t->string('id')->primary();
+            $t->string('name');
+            $t->integer('total_jobs');
+            $t->integer('pending_jobs');
+            $t->integer('failed_jobs');
+            $t->longText('failed_job_ids');
+            $t->mediumText('options')->nullable();
+            $t->integer('cancelled_at')->nullable();
+            $t->integer('created_at');
+            $t->integer('finished_at')->nullable();
+        });
+    }
 
     config()->set('import-export.models.'.FakeImportModel::class, [
         'processor' => FakeImportProcessor::class,
@@ -54,17 +73,13 @@ function initSession(): ImportSession
 }
 
 it('runs Initialize → Start → Job and lands the session in Completed', function () {
-    Bus::fake([ProcessImportJob::class]); // capture dispatches but let us run by hand
-
     $session = initSession();
 
     app(StartImportAction::class)->execute($session, dispatch: false);
 
-    // Manually run the job (queue.default = sync; we bypass DB::afterCommit dispatch by passing dispatch=false).
-    app(ProcessImportJob::class, ['sessionId' => $session->id])->handle(
-        app(\Umutcangungormus\LaravelImportExport\Services\FileReaderService::class),
-        app(\Umutcangungormus\LaravelImportExport\Contracts\FailureHandlerContract::class),
-    );
+    // Run the planner job (queue.default = sync, so the fanned-out
+    // ProcessImportChunkJob batch + FinalizeImportJob run inline).
+    app(ProcessImportJob::class, ['sessionId' => $session->id])->handle();
 
     $session->refresh();
 
@@ -81,17 +96,12 @@ it('runs Initialize → Start → Job and lands the session in Completed', funct
 });
 
 it('records a failure row and lands the session in CompletedWithErrors when one row throws', function () {
-    Bus::fake([ProcessImportJob::class]);
-
     $session = initSession();
     app(StartImportAction::class)->execute($session, dispatch: false);
 
     FakeImportProcessor::$throwOnRow2 = true;
 
-    app(ProcessImportJob::class, ['sessionId' => $session->id])->handle(
-        app(\Umutcangungormus\LaravelImportExport\Services\FileReaderService::class),
-        app(\Umutcangungormus\LaravelImportExport\Contracts\FailureHandlerContract::class),
-    );
+    app(ProcessImportJob::class, ['sessionId' => $session->id])->handle();
 
     $session->refresh();
 

@@ -87,7 +87,9 @@ class ImportSession extends Model
             return 0.0;
         }
 
-        return round(($this->processed_rows / $this->total_rows) * 100, 2);
+        // Clamp at 100%: concurrent chunk increments can transiently push
+        // processed_rows past total_rows before counts settle.
+        return round((min($this->processed_rows, $this->total_rows) / $this->total_rows) * 100, 2);
     }
 
     public function markAs(ImportStatus $status): void
@@ -97,9 +99,18 @@ class ImportSession extends Model
 
     public function markAsProcessing(): void
     {
+        // Reset per-run progress counters and clear stale failures so a
+        // retried/re-dispatched import reprocesses from a clean slate instead
+        // of accumulating on top of a previous attempt (which made
+        // processed_rows overshoot total_rows and the import never finish).
+        $this->failures()->delete();
+
         $this->update([
             'status' => ImportStatus::Processing,
             'started_at' => now(),
+            'processed_rows' => 0,
+            'successful_rows' => 0,
+            'failed_rows' => 0,
         ]);
     }
 
@@ -130,5 +141,38 @@ class ImportSession extends Model
     public function getOption(string $key, mixed $default = null): mixed
     {
         return data_get($this->options, $key, $default);
+    }
+
+    /**
+     * Confirmed source-column → target-field map, de-duplicated by target.
+     *
+     * When several source columns fuzzily match the same target field, the
+     * naive confirmedMappings()->keyBy('source_column')->map(target_field)
+     * is last-write-wins: the wrong source can silently claim the target.
+     * Keep only the highest-confidence source per target (ties resolved by
+     * iteration order) so near-duplicate headers don't corrupt the mapping.
+     *
+     * @return array<string,string> source_column => target_field
+     */
+    public function confirmedMappingLookup(): array
+    {
+        $lookup = [];
+        $claimed = [];
+
+        $mappings = $this->confirmedMappings()
+            ->whereNotNull('target_field')
+            ->orderByDesc('confidence_score')
+            ->get();
+
+        foreach ($mappings as $mapping) {
+            if (isset($claimed[$mapping->target_field])) {
+                continue; // a higher-confidence source already owns this target
+            }
+
+            $claimed[$mapping->target_field] = true;
+            $lookup[$mapping->source_column] = $mapping->target_field;
+        }
+
+        return $lookup;
     }
 }
