@@ -6,7 +6,7 @@
 
 Column auto-matching · reusable mapping templates · queued batch processing · per-row failure tracking · a publishable HTTP layer — all decoupled from your auth, tenancy, and domain models.
 
-[![Tests](https://github.com/umutcangungormus/laravel-import-export/actions/workflows/tests.yml/badge.svg)](https://github.com/umutcangungormus/laravel-import-export/actions/workflows/tests.yml)
+[![Tests](https://github.com/UmutCanGungormus/laravel-import-export/actions/workflows/tests.yml/badge.svg)](https://github.com/UmutCanGungormus/laravel-import-export/actions/workflows/tests.yml)
 [![Packagist Version](https://img.shields.io/packagist/v/umutcangungormus/laravel-import-export.svg?style=flat-square)](https://packagist.org/packages/umutcangungormus/laravel-import-export)
 [![PHP Version](https://img.shields.io/packagist/php-v/umutcangungormus/laravel-import-export.svg?style=flat-square)](https://packagist.org/packages/umutcangungormus/laravel-import-export)
 [![Laravel](https://img.shields.io/badge/Laravel-11.x%20%7C%2012.x-FF2D20.svg?style=flat-square&logo=laravel)](https://laravel.com)
@@ -323,7 +323,7 @@ Tests:    36 passed (165 assertions)
 
 A companion Vue 3 component library — drag-and-drop upload, column-mapping UI, progress, and a session manager — speaks this package's API out of the box:
 
-➡️ **[@umutcangungormus/vue-import-export](https://github.com/umutcangungormus/vue-import-export)**
+➡️ **[@umut-can-gungormus/vue-import-export](https://github.com/UmutCanGungormus/vue-import-export)**
 
 ## Versioning
 
@@ -335,6 +335,6 @@ The MIT License (MIT). See [LICENSE](LICENSE).
 
 <div align="center">
 
-Built with care by [Umut Can Gungormus](https://github.com/umutcangungormus).
+Built with care by [Umut Can Gungormus](https://github.com/UmutCanGungormus).
 
 </div>
