@@ -1,0 +1,60 @@
+name: Release
+
+# On a version tag (v*): run the test suite, then notify Packagist so the new
+# tag is indexed immediately (instead of waiting for the periodic crawl).
+#
+# Setup (one-time):
+#   1. Submit the repo once at https://packagist.org → Submit.
+#   2. Add repo secrets (Settings → Secrets and variables → Actions):
+#        PACKAGIST_USERNAME  – your packagist.org username
+#        PACKAGIST_TOKEN     – packagist.org → Profile → Show API Token
+#      If these are absent, the notify step is skipped and Packagist's own
+#      GitHub webhook still picks up the tag.
+#
+# Release flow:
+#   git tag v0.2.0 && git push origin v0.2.0
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  notify-packagist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Packagist
+        env:
+          PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          if [ -z "$PACKAGIST_TOKEN" ] || [ -z "$PACKAGIST_USERNAME" ]; then
+            echo "PACKAGIST_TOKEN / PACKAGIST_USERNAME not set — skipping."
+            echo "Packagist's GitHub webhook (if configured) will still index the tag."
+            exit 0
+          fi
+          curl -sf -XPOST -H 'content-type:application/json' \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/UmutCanGungormus/laravel-import-export"}}'
+          echo "Packagist notified."
