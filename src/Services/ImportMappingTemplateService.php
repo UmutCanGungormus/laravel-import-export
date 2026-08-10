@@ -171,8 +171,12 @@ class ImportMappingTemplateService
             $template->update($fillable);
         }
 
-        if (! empty($data['is_default'])) {
-            $template->setAsDefault();
+        // A present-and-non-null `is_default` drives the flag both ways; the
+        // bundled UpdateTemplateRequest sends null when the key is absent.
+        if (($data['is_default'] ?? null) !== null) {
+            $data['is_default']
+                ? $template->setAsDefault()
+                : $template->update(['is_default' => false]);
         }
 
         return $template->fresh();
