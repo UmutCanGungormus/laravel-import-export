@@ -174,6 +174,19 @@ Progress, failures, and status are tracked on the `ImportSession` model througho
 | `gates.*` | Names of the authorization abilities to check | namespaced strings |
 | `models` | The model registry (you fill this in) | empty |
 
+### A note on non-local disks
+
+`disk` may point at any Laravel disk. When it is not a local one (S3 and
+S3-compatible object stores, GCS, Azure, FTP/SFTP), the reader streams the
+object to a tempfile for each read and removes it afterwards — CSV and XLSX
+parsing both need seekable local files.
+
+That spooling happens **per read**, so a single import downloads the object
+twice while initializing (headers + row count) and once more per
+`ProcessImportChunkJob`. It is correct at any file size, but on large files
+served from a remote bucket the transfer cost dominates; keeping `disk` local
+(or on a mounted volume) avoids it entirely.
+
 > **Tip:** For large imports, point `queue.connection` at a dedicated connection whose `retry_after` exceeds `job_timeout`, and keep `job_tries` at `1` — a half-finished bulk import must never auto-retry and double-process rows.
 
 ## Core concepts

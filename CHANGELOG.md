@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Remote disks (2026-08-17)
+
+#### Fixed
+
+- **Import files stored on S3-compatible disks could not be read at all.** `FileReaderService::withLocalPath()` decided whether a disk was local by calling `Storage::disk($disk)->path()` inside a `try`/`catch`, on the assumption that remote drivers throw. They do not: `FilesystemAdapter::path()` only prefixes the key through `PathPrefixer`, and `AwsS3V3Adapter` inherits it unchanged — so an S3/OBS disk returns a plain string such as `staging/imports/x.xlsx`. The `catch` was therefore dead code, the `readStream()` spooling branch was never entered, and `ZipArchive::open()` was handed a bucket key (`RuntimeException: Cannot open XLSX file: staging/imports/x.xlsx`; CSV failed the same way one frame lower). Detection is now `is_file()` on the resolved path, which is the only property that actually distinguishes a readable local file from a remote key. The `catch` is retained for custom `Storage::extend()` drivers that expose no `path()` at all.
+- `Storage::disk($disk)` is resolved outside that `try`, so an unconfigured disk surfaces as Laravel's own `Disk [x] does not have a configured driver.` instead of being swallowed and re-thrown later as a misleading `Cannot open stream for '…'`.
+- The spool path leaked one empty tempfile per remote read: `tempnam()` creates the extensionless file it returns, but only the `…$extension`-suffixed copy was unlinked. Both are now tracked and cleaned up in `finally`, and a `tempnam()` failure raises a clear error instead of writing to a bare `.xlsx` in the working directory.
+- `tests/Unit/FileReaderRemoteDiskTest.php` previously "covered" remote disks with a hand-rolled stub that threw from `path()` — encoding the very assumption that was wrong, so it stayed green while production broke. It now exercises a `FilesystemAdapter` whose reads work but whose configured root is a bucket-style prefix (the real S3 shape) across `readHeaders()`, `countRows()`, `readChunks()` and `readRange()` on both XLSX and CSV, asserts the stub's fidelity, guards via reflection that `AwsS3V3Adapter` still inherits `path()`, and asserts no `ie_*` tempfile survives a read. The throwing-driver cases are kept alongside.
+
+#### Known limitation
+
+- Each `withLocalPath()` call downloads the whole object, so one import costs 2 downloads during initialize (`readHeaders` + `countRows`) plus one per `ProcessImportChunkJob`. On a 50-chunk file that is ~52 full downloads from the bucket. Correct but wasteful; a per-session spool cache is future work.
+
 ### Back-ported from source app (2026-06-18)
 
 Generic import/export improvements synced back from the consuming application,
@@ -33,7 +46,7 @@ all framework-agnostic and carrying no host-app coupling:
 ### Fixed
 
 - `HasImportExport::formatExportValue` and `ModelExportService::formatValue` now emit the localized "Yes" / "No" cell value for boolean export columns instead of the literal lang key. The lang files have been split into per-group files (`status.php`, `session.php`, `mapping.php`, `template.php`, `export.php`, `errors.php`, `fields.php`) under `lang/{en,tr}/` so that `__('import-export::group.key')` resolves through Laravel's standard namespace.key path.
-- `FileReaderService` now works on disks whose driver does not support `path()` (S3, GCS, Azure, in-memory). When `path()` throws, the file is spooled to a tempfile via `readStream()` and the tempfile is unlinked deterministically in a `finally` block after the read closure returns.
+- `FileReaderService` spools the source file to a tempfile via `readStream()` when the disk does not resolve to a local file, and unlinks the tempfile deterministically in a `finally` block after the read closure returns. **Superseded — see "Remote disks" under Unreleased: the original detection never actually triggered on S3.**
 - `FileReaderService::xmlReaderFromStream` no longer leaks tempfiles via `register_shutdown_function`. Each XLSX read now cleans up its sidecar tempfiles (shared strings, styles, workbook, rels, worksheet) inline through a `finally` block tied to the iteration's lifetime, and copies the worksheet XML via `stream_copy_to_stream` instead of slurping it into RAM. A new XLSX integration test covers headers + data rows and asserts no `xlsx_*` tempfiles linger in `sys_get_temp_dir()` after reading.
 - `ImportTemplateController::store` now forwards `TenantResolverContract::currentTenantId()` to `MappingTemplateService::create()` instead of hardcoding `null`, so templates created via the HTTP layer carry the host's tenant id — matching the headless API and `ImportSessionController`.
 
