@@ -2,6 +2,7 @@
 
 namespace Umutcangungormus\LaravelImportExport\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -56,10 +57,18 @@ class ImportMappingTemplate extends Model
 
     public function setAsDefault(): void
     {
-        // Remove default flag from all other templates for same user + model
+        // Remove default flag from all other templates for same tenant + user
+        // + model. Without the tenant condition a multi-tenant host promoting
+        // a template under one tenant would clear that user's default for the
+        // same model under every other tenant.
         static::query()
             ->where('user_id', $this->user_id)
             ->where('importable_type', $this->importable_type)
+            ->when(
+                $this->tenant_id === null,
+                fn (Builder $query) => $query->whereNull('tenant_id'),
+                fn (Builder $query) => $query->where('tenant_id', (string) $this->tenant_id),
+            )
             ->where('id', '!=', $this->id)
             ->update(['is_default' => false]);
 
