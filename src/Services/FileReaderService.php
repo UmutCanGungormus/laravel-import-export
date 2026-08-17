@@ -730,9 +730,9 @@ class FileReaderService
 
     /**
      * Resolve a usable local filesystem path for $filePath on $disk and pass
-     * it to the given $work closure. If the disk's driver implements path()
-     * the file is read in place; otherwise (S3, GCS, Azure, in-memory…)
-     * its readStream() is spooled to a tempfile that is unlinked in finally.
+     * it to the given $work closure. If the disk resolves to a real local
+     * file it is read in place; otherwise (S3, GCS, Azure, FTP/SFTP…) its
+     * readStream() is spooled to a tempfile that is unlinked in finally.
      *
      * @template T
      *
@@ -741,14 +741,29 @@ class FileReaderService
      */
     private function withLocalPath(string $filePath, string $disk, callable $work): mixed
     {
+        // Outside the try below: an unknown disk must surface as Laravel's own
+        // "Disk [x] does not have a configured driver." rather than being
+        // swallowed and re-thrown later as a confusing stream error.
         $filesystem = Storage::disk($disk);
+
         $tmpPath = null;
+        $tmpReservation = null;
+
+        // path() does NOT throw on remote drivers: FilesystemAdapter::path()
+        // just prefixes the key via PathPrefixer and AwsS3V3Adapter does not
+        // override it, so an S3 disk happily returns "prefix/imports/x.xlsx".
+        // The only reliable test is whether the resolved path is a real local
+        // file. (The catch still matters for custom Storage::extend() drivers
+        // that expose no path() at all.)
+        $localPath = null;
 
         try {
-            $localPath = $filesystem->path($filePath);
+            $candidate = $filesystem->path($filePath);
+
+            if (is_string($candidate) && is_file($candidate)) {
+                $localPath = $candidate;
+            }
         } catch (\Throwable $e) {
-            // path() is not supported on this driver — fall through to
-            // the readStream() spooling path below.
             $localPath = null;
         }
 
@@ -762,11 +777,26 @@ class FileReaderService
             }
 
             $extension = pathinfo($filePath, PATHINFO_EXTENSION) ?: 'tmp';
-            $tmpPath = tempnam(sys_get_temp_dir(), 'ie_').'.'.$extension;
+
+            // tempnam() creates the extensionless file it returns; keep it as
+            // the uniqueness reservation (so the suffixed name cannot collide)
+            // and unlink both in the finally below.
+            $tmpReservation = tempnam(sys_get_temp_dir(), 'ie_');
+
+            if ($tmpReservation === false) {
+                fclose($stream);
+                $tmpReservation = null;
+                throw new \RuntimeException(
+                    'Cannot create a spool tempfile in '.sys_get_temp_dir().'.',
+                );
+            }
+
+            $tmpPath = $tmpReservation.'.'.$extension;
             $tmpHandle = fopen($tmpPath, 'wb');
 
             if ($tmpHandle === false) {
                 fclose($stream);
+                @unlink($tmpReservation);
                 @unlink($tmpPath);
                 throw new \RuntimeException("Cannot open spool tempfile {$tmpPath}.");
             }
@@ -784,8 +814,10 @@ class FileReaderService
         try {
             return $work($localPath);
         } finally {
-            if ($tmpPath !== null && file_exists($tmpPath)) {
-                @unlink($tmpPath);
+            foreach ([$tmpPath, $tmpReservation] as $garbage) {
+                if ($garbage !== null && file_exists($garbage)) {
+                    @unlink($garbage);
+                }
             }
         }
     }
