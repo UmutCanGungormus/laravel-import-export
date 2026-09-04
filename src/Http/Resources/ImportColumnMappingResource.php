@@ -20,6 +20,7 @@ class ImportColumnMappingResource extends JsonResource
                 : $this->match_method,
             'is_required' => $this->is_required,
             'is_confirmed' => $this->is_confirmed,
+            'multi_strategy' => data_get($this->transformation_rules, 'multi_strategy'),
         ];
     }
 }
