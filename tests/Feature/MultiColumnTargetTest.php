@@ -9,7 +9,9 @@ use Umutcangungormus\LaravelImportExport\Data\InitializeImportData;
 use Umutcangungormus\LaravelImportExport\Data\UpdateMappingData;
 use Umutcangungormus\LaravelImportExport\Enums\MultiColumnStrategy;
 use Umutcangungormus\LaravelImportExport\Jobs\ProcessImportJob;
+use Umutcangungormus\LaravelImportExport\Models\ImportMappingTemplate;
 use Umutcangungormus\LaravelImportExport\Models\ImportSession;
+use Umutcangungormus\LaravelImportExport\Services\ImportMappingTemplateService;
 use Umutcangungormus\LaravelImportExport\Tests\Fixtures\FakeImportModel;
 use Umutcangungormus\LaravelImportExport\Tests\Fixtures\FakeImportProcessor;
 
@@ -197,4 +199,73 @@ it('persists the strategy on the mapping and drops it when the column is release
     // A released column must not carry a strategy into whatever it is pointed
     // at next.
     expect($mapping->fresh()->transformation_rules)->toBeNull();
+});
+
+it('saves the combine strategy into a template made from the session', function () {
+    $session = multiSession();
+    mapColumnsOnto($session, ['Not A', 'Not B'], 'notes', 'json');
+
+    $template = app(ImportMappingTemplateService::class)
+        ->createFromSession($session, 'İki notlu şablon');
+
+    $byColumn = collect($template->template_data['mappings'])->keyBy('source_column');
+
+    expect($byColumn['Not A']['multi_strategy'])->toBe('json');
+    expect($byColumn['Not B']['multi_strategy'])->toBe('json');
+
+    // A single-column mapping carries no strategy key at all.
+    expect($byColumn['sku'])->not->toHaveKey('multi_strategy');
+});
+
+it('reapplies a template as a combined target rather than as a lost column', function () {
+    $template = ImportMappingTemplate::create([
+        'user_id' => null,
+        'tenant_id' => null,
+        'importable_type' => FakeImportModel::class,
+        'template_name' => 'İki notlu şablon',
+        'is_default' => false,
+        'is_company_wide' => false,
+        'template_data' => [
+            'mappings' => [
+                ['source_column' => 'sku', 'target_field' => 'sku'],
+                ['source_column' => 'name', 'target_field' => 'name'],
+                ['source_column' => 'Not A', 'target_field' => 'notes', 'multi_strategy' => 'merge'],
+                ['source_column' => 'Not B', 'target_field' => 'notes', 'multi_strategy' => 'merge'],
+            ],
+        ],
+    ]);
+
+    $session = multiSession();
+    app(ImportMappingTemplateService::class)->applyToSession($template, $session);
+
+    expect($session->multiColumnStrategies())->toBe(['notes' => MultiColumnStrategy::Merge]);
+
+    $rows = runMultiImport($session);
+    expect($rows[0]['notes'])->toBe('ilk not ikinci not');
+});
+
+it('clears a stale strategy from a column the template maps singly', function () {
+    $session = multiSession();
+    mapColumnsOnto($session, ['Not A', 'Not B'], 'notes', 'merge');
+
+    $template = ImportMappingTemplate::create([
+        'user_id' => null,
+        'tenant_id' => null,
+        'importable_type' => FakeImportModel::class,
+        'template_name' => 'Tek notlu şablon',
+        'is_default' => false,
+        'is_company_wide' => false,
+        'template_data' => [
+            'mappings' => [
+                ['source_column' => 'Not A', 'target_field' => 'notes'],
+            ],
+        ],
+    ]);
+
+    app(ImportMappingTemplateService::class)->applyToSession($template, $session);
+
+    // The template says this column feeds `notes` on its own; the strategy it
+    // was carrying must not survive to combine it with whatever else points there.
+    expect($session->columnMappings()->where('source_column', 'Not A')->value('transformation_rules'))
+        ->toBeNull();
 });
