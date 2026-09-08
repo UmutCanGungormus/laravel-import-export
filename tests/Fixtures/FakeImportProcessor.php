@@ -17,11 +17,15 @@ class FakeImportProcessor implements ImportProcessorInterface
 
     public static bool $throwOnRow2 = false;
 
+    /** @var ImportSession[] One entry per afterComplete() call, so double-finalize is visible. */
+    public static array $completedSessions = [];
+
     public static function reset(): void
     {
         self::$preparedRows = [];
         self::$afterRows = [];
         self::$throwOnRow2 = false;
+        self::$completedSessions = [];
     }
 
     public function prepare(ImportSession $importSession, array $data): array
@@ -38,5 +42,10 @@ class FakeImportProcessor implements ImportProcessorInterface
     public function after(object $model, array $data): void
     {
         self::$afterRows[] = ['model' => $model, 'data' => $data];
+    }
+
+    public function afterComplete(ImportSession $importSession): void
+    {
+        self::$completedSessions[] = $importSession;
     }
 }

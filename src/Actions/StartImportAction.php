@@ -39,14 +39,19 @@ class StartImportAction
             ->through([ValidateRequiredMappings::class])
             ->thenReturn();
 
+        // Optimistically mark as processing BEFORE dispatching. On the `sync`
+        // queue connection DB::afterCommit() runs the closure inline right here
+        // (no open transaction → the callback fires immediately), so the whole
+        // import — including FinalizeImportJob's markAsCompleted() — executes
+        // synchronously during dispatch. If we set "processing" *after* that, we
+        // overwrite the terminal status and the session looks stuck forever.
+        $session->update(['status' => ImportStatus::Processing]);
+
         if ($dispatch) {
             DB::afterCommit(function () use ($session) {
                 ProcessImportJob::dispatch($session->id);
             });
         }
-
-        // Optimistically mark as processing (Job re-asserts when it starts).
-        $session->update(['status' => ImportStatus::Processing]);
 
         return $session->fresh();
     }

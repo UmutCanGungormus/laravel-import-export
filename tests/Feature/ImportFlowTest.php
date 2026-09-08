@@ -111,6 +111,25 @@ it('records a failure row and lands the session in CompletedWithErrors when one 
     expect($session->successful_rows)->toBe(2);
 });
 
+it('lands the session in Completed when StartImportAction dispatches the import itself', function () {
+    // The path a host actually takes: no manual handle(), no Queue::fake. With
+    // queue.default = sync, DB::afterCommit() runs inline (no open transaction)
+    // so the planner, its chunk batch and the finalizer all execute right here.
+    $session = initSession();
+
+    app(StartImportAction::class)->execute($session);
+
+    $session->refresh();
+
+    expect($session->status)->toBe(ImportStatus::Completed);
+    expect($session->successful_rows)->toBe(3);
+    expect(FakeImportModel::count())->toBe(3);
+
+    // Exactly once: a second finalize would re-run the processor's
+    // afterComplete() hook, which hosts use for non-idempotent resolution.
+    expect(FakeImportProcessor::$completedSessions)->toHaveCount(1);
+});
+
 it('dispatches ProcessImportJob through DB::afterCommit when StartImportAction is called normally', function () {
     Queue::fake();
 
