@@ -93,12 +93,16 @@ class ImportMappingTemplateService
     ): ImportMappingTemplate {
         $mappings = $session->confirmedMappings()
             ->get()
-            ->map(fn ($m) => [
+            ->map(fn ($m) => array_filter([
                 'source_column' => $m->source_column,
                 'target_field' => $m->target_field,
                 'confidence_score' => $m->confidence_score,
                 'match_method' => is_object($m->match_method) ? $m->match_method->value : $m->match_method,
-            ])
+                // Carried so a template of a combined target reapplies as one:
+                // without it the columns come back pointing at the same target
+                // with no way to fold them, and all but one would be dropped.
+                'multi_strategy' => data_get($m->transformation_rules, 'multi_strategy'),
+            ], fn ($value) => $value !== null))
             ->values()
             ->all();
 
@@ -144,16 +148,26 @@ class ImportMappingTemplateService
                 continue;
             }
 
-            $session->columnMappings()->updateOrCreate(
-                ['source_column' => $sourceColumn],
-                [
-                    'target_field' => $mapping['target_field'],
-                    'confidence_score' => 1.0,
-                    'match_method' => MatchMethod::Template->value,
-                    'is_confirmed' => true,
-                    'is_required' => $this->isFieldRequired($session->importable_type, $mapping['target_field']),
-                ],
-            );
+            $row = $session->columnMappings()->firstOrNew(['source_column' => $sourceColumn]);
+
+            // The rules object is rewritten, not merged: the template decides
+            // what this column is now, and a strategy left over from whatever it
+            // used to feed would combine a target the template maps singly.
+            $rules = (array) ($row->transformation_rules ?? []);
+            unset($rules['multi_strategy']);
+
+            if (! empty($mapping['multi_strategy'])) {
+                $rules['multi_strategy'] = $mapping['multi_strategy'];
+            }
+
+            $row->fill([
+                'target_field' => $mapping['target_field'],
+                'confidence_score' => 1.0,
+                'match_method' => MatchMethod::Template->value,
+                'is_confirmed' => true,
+                'is_required' => $this->isFieldRequired($session->importable_type, $mapping['target_field']),
+                'transformation_rules' => $rules === [] ? null : $rules,
+            ])->save();
         }
 
         $template->markAsUsed();

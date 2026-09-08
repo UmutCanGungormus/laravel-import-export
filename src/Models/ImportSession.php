@@ -5,6 +5,7 @@ namespace Umutcangungormus\LaravelImportExport\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Umutcangungormus\LaravelImportExport\Enums\ImportStatus;
+use Umutcangungormus\LaravelImportExport\Enums\MultiColumnStrategy;
 
 /**
  * @property int $id
@@ -152,12 +153,19 @@ class ImportSession extends Model
      * Keep only the highest-confidence source per target (ties resolved by
      * iteration order) so near-duplicate headers don't corrupt the mapping.
      *
+     * The one exception is a target the user deliberately fed from several
+     * columns — a `multi` field carrying a {@see MultiColumnStrategy}. Those
+     * keep every column; {@see \Umutcangungormus\LaravelImportExport\Jobs\ProcessImportChunkJob}
+     * folds them into one value per row. Without a strategy nothing changes,
+     * so a fuzzy double-match still resolves the historic way.
+     *
      * @return array<string,string> source_column => target_field
      */
     public function confirmedMappingLookup(): array
     {
         $lookup = [];
         $claimed = [];
+        $strategies = $this->multiColumnStrategies();
 
         $mappings = $this->confirmedMappings()
             ->whereNotNull('target_field')
@@ -165,14 +173,85 @@ class ImportSession extends Model
             ->get();
 
         foreach ($mappings as $mapping) {
-            if (isset($claimed[$mapping->target_field])) {
+            $target = (string) $mapping->target_field;
+
+            if (isset($claimed[$target]) && ! isset($strategies[$target])) {
                 continue; // a higher-confidence source already owns this target
             }
 
-            $claimed[$mapping->target_field] = true;
-            $lookup[$mapping->source_column] = $mapping->target_field;
+            $claimed[$target] = true;
+            $lookup[$mapping->source_column] = $target;
         }
 
         return $lookup;
+    }
+
+    /**
+     * The combine strategy each multi-fed target was given, keyed by target.
+     *
+     * Read off the mappings' `transformation_rules`; when the columns of one
+     * target disagree, the oldest row — the column that claimed the target
+     * first — decides. A target whose field config does not mark it `multi` is
+     * ignored outright, so a stale rule cannot turn a date or an id column into
+     * a merged string.
+     *
+     * @return array<string, MultiColumnStrategy> target_field => strategy
+     */
+    public function multiColumnStrategies(): array
+    {
+        $capable = $this->multiCapableTargets();
+
+        if ($capable === []) {
+            return [];
+        }
+
+        $strategies = [];
+
+        $mappings = $this->confirmedMappings()
+            ->whereNotNull('target_field')
+            ->orderBy('id')
+            ->get();
+
+        foreach ($mappings as $mapping) {
+            $target = (string) $mapping->target_field;
+
+            if (isset($strategies[$target]) || ! isset($capable[$target])) {
+                continue;
+            }
+
+            $strategy = MultiColumnStrategy::tryFromValue(
+                data_get($mapping->transformation_rules, 'multi_strategy'),
+            );
+
+            if ($strategy !== null) {
+                $strategies[$target] = $strategy;
+            }
+        }
+
+        return $strategies;
+    }
+
+    /**
+     * Target fields whose config allows more than one source column.
+     *
+     * @return array<string, true> Keyed by target field for isset() lookups
+     */
+    private function multiCapableTargets(): array
+    {
+        $modelClass = $this->importable_type;
+
+        if (! is_string($modelClass) || ! method_exists($modelClass, 'getImportableFields')) {
+            return [];
+        }
+
+        $capable = [];
+
+        foreach ($modelClass::getImportableFields() as $field => $config) {
+            if (! empty($config['multi'])) {
+                $capable[$field] = true;
+            }
+        }
+
+        return $capable;
     }
 }

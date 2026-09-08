@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Validator;
 use Throwable;
 use Umutcangungormus\LaravelImportExport\Contracts\FailureHandlerContract;
 use Umutcangungormus\LaravelImportExport\Enums\ImportStatus;
+use Umutcangungormus\LaravelImportExport\Enums\MultiColumnStrategy;
 use Umutcangungormus\LaravelImportExport\Exceptions\ProcessorNotRegistered;
 use Umutcangungormus\LaravelImportExport\Models\ImportSession;
 use Umutcangungormus\LaravelImportExport\Services\FileReaderService;
@@ -82,8 +83,10 @@ class ProcessImportChunkJob implements ShouldQueue
         $processor = app($processorClass);
 
         // De-duplicated by target field so near-duplicate headers don't let
-        // the wrong source column silently claim a target.
+        // the wrong source column silently claim a target — except where the
+        // user deliberately pointed several columns at one `multi` target.
         $mappingLookup = $session->confirmedMappingLookup();
+        $multiStrategies = $session->multiColumnStrategies();
 
         $chunkSize = (int) $session->getOption('chunk_size', config('import-export.chunk_size', 1000));
         $headerRow = (int) $session->getOption('header_row', 1);
@@ -97,13 +100,14 @@ class ProcessImportChunkJob implements ShouldQueue
             $this->startRow,
             $this->limit,
             $chunkSize,
-            function (array $chunk) use ($session, $modelClass, $importableFields, $mappingLookup, $uniqueBy, $failureHandler, $processor) {
+            function (array $chunk) use ($session, $modelClass, $importableFields, $mappingLookup, $multiStrategies, $uniqueBy, $failureHandler, $processor) {
                 foreach ($chunk as $item) {
                     $this->processRow(
                         $session,
                         $modelClass,
                         $importableFields,
                         $mappingLookup,
+                        $multiStrategies,
                         $uniqueBy,
                         $item['row_number'],
                         $item['data'],
@@ -120,6 +124,7 @@ class ProcessImportChunkJob implements ShouldQueue
         string $modelClass,
         array $importableFields,
         array $mappingLookup,
+        array $multiStrategies,
         array $uniqueBy,
         int $rowNumber,
         array $rawData,
@@ -128,7 +133,7 @@ class ProcessImportChunkJob implements ShouldQueue
     ): void {
         try {
             // 1. Transform raw row using mappings
-            $mapped = $this->mapRow($rawData, $mappingLookup, $importableFields);
+            $mapped = $this->mapRow($rawData, $mappingLookup, $multiStrategies, $importableFields);
 
             // 2. Processor pre-processing hook
             $mapped = $processor->prepare($session, $mapped);
@@ -177,15 +182,54 @@ class ProcessImportChunkJob implements ShouldQueue
         $session->increment('processed_rows');
     }
 
-    private function mapRow(array $rawData, array $mappingLookup, array $importableFields): array
+    /**
+     * Turns one raw row into the target-keyed shape the rest of the pipeline reads.
+     *
+     * Values are collected per target rather than assigned straight away: a
+     * `multi` target fed by several columns has to see all of its cells before
+     * it can be folded into one, and the fold has to follow the order the
+     * columns appear in the file — which is the order of the raw row itself,
+     * not the confidence order the lookup was built in.
+     *
+     * @param  array<string, mixed>  $rawData  The row, keyed by file header
+     * @param  array<string, string>  $mappingLookup  source_column => target_field
+     * @param  array<string, MultiColumnStrategy>  $multiStrategies  target_field => strategy
+     * @param  array<string, array<string, mixed>>  $importableFields  The model's field config
+     * @return array<string, mixed> target_field => value
+     */
+    private function mapRow(array $rawData, array $mappingLookup, array $multiStrategies, array $importableFields): array
     {
         $mapped = [];
+        $collected = [];
 
-        foreach ($mappingLookup as $sourceColumn => $targetField) {
-            $rawValue = $rawData[$sourceColumn] ?? null;
+        foreach ($rawData as $sourceColumn => $rawValue) {
+            $targetField = $mappingLookup[$sourceColumn] ?? null;
+
+            if ($targetField === null) {
+                continue;
+            }
 
             $transform = $importableFields[$targetField]['transform'] ?? null;
-            $mapped[$targetField] = $transform && $rawValue !== null ? $transform($rawValue) : $rawValue;
+            $collected[$targetField][$sourceColumn] = $transform && $rawValue !== null
+                ? $transform($rawValue)
+                : $rawValue;
+        }
+
+        // A column the lookup names but the row does not carry still has to
+        // reach the target: the worker only applies a field's `default` when
+        // the key is absent, so a missing cell must land as null, not vanish.
+        foreach ($mappingLookup as $sourceColumn => $targetField) {
+            if (! array_key_exists($sourceColumn, $rawData)) {
+                $collected[$targetField][$sourceColumn] ??= null;
+            }
+        }
+
+        foreach ($collected as $targetField => $bySource) {
+            $strategy = $multiStrategies[$targetField] ?? null;
+
+            $mapped[$targetField] = count($bySource) > 1 && $strategy !== null
+                ? $strategy->combine($bySource)
+                : reset($bySource);
         }
 
         foreach ($importableFields as $fieldKey => $fieldConfig) {
