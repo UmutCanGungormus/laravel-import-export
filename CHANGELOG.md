@@ -7,7 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Remote disks (2026-08-17)
+## [1.1.0] - 2026-09-08
+
+### Added
+
+- **A target field may now be fed by several file columns.** Mark a field
+  `'multi' => true` in the model's importable-field config and the mapping
+  editor lets the user point more than one header at it; the cells are folded
+  into one value per row by a `MultiColumnStrategy` — `merge` joins them with a
+  space in file-column order, `json` stores a `{"column name": "cell"}` object.
+  Blank cells drop out of both shapes, and a row that leaves every column empty
+  yields `null`, exactly as an unmapped target would.
+- `MultiColumnStrategy` enum (`src/Enums/`) owning the fold, plus
+  `ImportSession::multiColumnStrategies()` returning the strategy per target.
+  A target whose field config does not carry `multi` is ignored outright, so a
+  stale rule cannot turn a date or id column into a merged string.
+- `UpdateMappingData` and `UpdateMappingRequest` accept `multi_strategy`
+  (validated against the enum), persisted as one key inside the mapping's
+  shared `transformation_rules` object rather than replacing it.
+  `ImportColumnMappingResource` exposes it back.
+- Mapping templates carry the strategy: `ImportMappingTemplateService` saves
+  `multi_strategy` per row and reapplies a combined target as one. Without it
+  the columns came back pointing at the same target with no way to fold them
+  and all but one would be dropped.
+- `tests/Feature/MultiColumnTargetTest.php` covering the fold, the
+  no-strategy default, an ignored strategy on a non-`multi` target, the
+  release of a strategy when a column is unmapped, and the template round-trip.
+
+### Changed
+
+- `ImportSession::confirmedMappingLookup()` keeps every column of a target that
+  carries a strategy instead of letting the highest-confidence source claim it
+  alone. Targets without a strategy still de-duplicate exactly as before, so a
+  fuzzy double-match resolves the historic way.
+- `ProcessImportChunkJob::mapRow()` walks the raw row rather than the lookup, so
+  a combined target folds its cells in file-column order rather than in the
+  confidence order the lookup was built in. A mapped column the row does not
+  carry still lands as `null`, preserving the field-`default` behaviour.
+
+### Fixed
+
+- **A `sync`-connection import was left stuck in `processing` forever.**
+  `StartImportAction` wrote the `Processing` status *after* dispatching
+  `ProcessImportJob`. On `sync` there is no open transaction for
+  `DB::afterCommit()` to wait on, so the closure runs inline and the entire
+  pipeline — planner, chunk batch and `FinalizeImportJob`'s terminal write —
+  completes before `dispatch()` returns; the trailing update then overwrote the
+  terminal status. The status is now written before dispatch, leaving the finalizer's
+  write as the last word on both `sync` and a real queue driver.
+
+## [1.0.1] - 2026-08-17
+
+### Remote disks
 
 #### Fixed
 
@@ -20,7 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Each `withLocalPath()` call downloads the whole object, so one import costs 2 downloads during initialize (`readHeaders` + `countRows`) plus one per `ProcessImportChunkJob`. On a 50-chunk file that is ~52 full downloads from the bucket. Correct but wasteful; a per-session spool cache is future work.
 
-### Back-ported from source app (2026-06-18)
+## [1.0.0] - 2026-08-10
+
+### Fixed
+
+- The default-template flag is scoped to the tenant. Marking a template default
+  cleared the flag on every other tenant's templates, because the "only one
+  default" write was not filtered by `tenant_id`; untenanted templates are
+  scoped among themselves. Updating a template with `is_default: false` now
+  clears the flag, where before only setting it to true had any effect — a
+  null keeps the current value.
+
+## [0.1.0] - 2026-06-18
+
+### Back-ported from source app
 
 Generic import/export improvements synced back from the consuming application,
 all framework-agnostic and carrying no host-app coupling:

@@ -26,6 +26,7 @@ Column auto-matching · reusable mapping templates · queued batch processing ·
 - [Configuration](#configuration)
 - [Core concepts](#core-concepts)
   - [The model registry](#the-model-registry)
+  - [Multi-column targets](#multi-column-targets)
   - [Processors](#processors)
   - [Tenancy](#tenancy)
   - [Authorization](#authorization)
@@ -194,6 +195,34 @@ served from a remote bucket the transfer cost dominates; keeping `disk` local
 ### The model registry
 
 Rather than annotating models, you declare each importable model's schema once in `config('import-export.models')`, keyed by FQCN. Each entry defines `fields` (with `required`, `type`, `aliases`, `validation`, `transform`, `default`), the `unique_by` key for `updateOrCreate`, an optional `processor`, and `export_fields`. The `HasImportExport` trait reads this config so your models stay clean.
+
+### Multi-column targets
+
+A field marked `'multi' => true` may be fed by more than one file column at
+once — a spreadsheet that splits an address over `Street`, `No` and `District`
+can land in a single `address` column:
+
+```php
+'address' => ['required' => false, 'type' => 'string', 'multi' => true],
+```
+
+The mapping editor then lets the user add extra columns to that field and pick
+how they combine:
+
+| Strategy | Result for `Main St` + `12` + `Kadıköy` |
+| --- | --- |
+| `merge` (default) | `Main St 12 Kadıköy` |
+| `json` | `{"Street":"Main St","No":"12","District":"Kadıköy"}` |
+
+Cells are folded in the order the columns appear in the file. Blank cells drop
+out, and a row that leaves every column empty yields `null` — the same value an
+unmapped target would give, so the field's `default` still applies. Fields
+without `multi` are unaffected: a second column pointed at one of them is
+de-duplicated by confidence exactly as before, and a strategy stored against
+such a field is ignored.
+
+The chosen strategy is saved on the mapping and carried by mapping templates,
+so a template of a combined target reapplies as one.
 
 ### Processors
 
