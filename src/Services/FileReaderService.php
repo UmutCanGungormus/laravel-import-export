@@ -21,6 +21,10 @@ class FileReaderService
                 if ($index + 1 === $headerRow) {
                     return array_map(static fn ($v) => is_string($v) ? trim($v) : (string) $v, $row);
                 }
+
+                if ($index + 1 > $headerRow) {
+                    break; // header row has no cells — don't scan the rest of the file
+                }
             }
 
             return [];
@@ -44,11 +48,7 @@ class FileReaderService
             $dataRow = 0;
             $chunk = [];
 
-            foreach ($this->rows($localPath) as $rowIndex => $raw) {
-                if ($rowIndex < $headerRow) {
-                    continue;
-                }
-
+            foreach ($this->dataRows($localPath, $headerRow) as $rowIndex => $raw) {
                 $dataRow++;
                 $mapped = [];
                 foreach ($headers as $colIndex => $header) {
@@ -94,11 +94,7 @@ class FileReaderService
             $dataRow = 0;
             $chunk = [];
 
-            foreach ($this->rows($localPath) as $rowIndex => $raw) {
-                if ($rowIndex < $headerRow) {
-                    continue;
-                }
-
+            foreach ($this->dataRows($localPath, $headerRow) as $rowIndex => $raw) {
                 $dataRow++;
 
                 if ($dataRow < $startDataRow) {
@@ -133,10 +129,8 @@ class FileReaderService
         return $this->withLocalPath($filePath, $disk, function (string $localPath) use ($headerRow): int {
             $count = 0;
 
-            foreach ($this->rows($localPath) as $index => $_) {
-                if ($index >= $headerRow) {
-                    $count++;
-                }
+            foreach ($this->dataRows($localPath, $headerRow) as $_) {
+                $count++;
             }
 
             return $count;
@@ -144,6 +138,49 @@ class FileReaderService
     }
 
     // ── Unified row generator ─────────────────────────────────────────────
+
+    /**
+     * Data rows only: rows after the header row that carry at least one value.
+     *
+     * Blank rows are skipped here, in the one generator that countRows(),
+     * readChunks() and readRange() all share, so the row count and the chunk
+     * windows agree. A blank row is one whose every cell is null or
+     * whitespace-only: a CSV blank line or a ";;;" line, or an XLSX row whose
+     * cells hold an empty formula result or a blank string. Without this a
+     * sheet that is formatted far below its data turns every formatted row
+     * into a failed import row.
+     *
+     * Keys stay the 0-based sheet row index, so row_number still points at
+     * the real line in the file.
+     */
+    private function dataRows(string $localPath, int $headerRow): \Generator
+    {
+        foreach ($this->rows($localPath) as $rowIndex => $raw) {
+            if ($rowIndex < $headerRow || $this->isBlankRow($raw)) {
+                continue;
+            }
+
+            yield $rowIndex => $raw;
+        }
+    }
+
+    private function isBlankRow(array $row): bool
+    {
+        foreach ($row as $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            // \s plus NBSP / BOM, which survive Excel copy-paste and trim().
+            if (is_string($value) && preg_match('/\A[\s\x{00A0}\x{FEFF}]*\z/u', $value) === 1) {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
 
     private function rows(string $localPath): \Generator
     {
@@ -322,7 +359,12 @@ class FileReaderService
 
             switch (true) {
                 case $nodeType === \XMLReader::ELEMENT && $nodeName === 'row':
-                    $rowIndex++;
+                    // Excel leaves out <row> elements for rows that have no
+                    // cells, so counting elements drifts after a gap. Use the
+                    // row's own r="…" number; fall back to counting when the
+                    // writer omitted it (r is optional in the spec).
+                    $r = $reader->getAttribute('r');
+                    $rowIndex = $r !== null && ctype_digit($r) ? (int) $r - 1 : $rowIndex + 1;
                     $currentCells = [];
                     $maxCol = -1;
                     break;

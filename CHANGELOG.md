@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Blank rows are no longer read as data rows.** `countRows()`, `readChunks()`
+  and `readRange()` now share one generator that skips any row after the header
+  whose every cell is null or whitespace-only: CSV blank lines and `,,,` lines,
+  and XLSX rows that only carry an empty formula result or a blank string.
+  Before, a sheet formatted below its data produced one failed import row (and
+  its share of chunk jobs) per formatted row. The count and the chunk windows
+  still agree because all three skip the same rows.
+- **XLSX `row_number` is the real sheet row.** The reader used to count `<row>`
+  elements, and Excel leaves untouched rows out of the file, so after a gap
+  every failure pointed at the wrong line. It now uses the row's `r` attribute
+  (falling back to counting when a writer omits it). `header_row` therefore also
+  means the row number as Excel shows it.
+
 ## [1.1.0] - 2026-09-08
 
 ### Added
