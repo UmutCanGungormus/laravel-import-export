@@ -232,11 +232,16 @@ class FileReaderService
     /**
      * Force every cell in a CSV row to valid UTF-8.
      *
-     * Excel saved-as-CSV on a Turkish/European Windows locale writes bytes in
-     * Windows-1252 or ISO-8859-9, which corrupt Eloquent's json_encode cast
-     * for `detected_headers`. mb_convert_encoding tries the candidate list in
-     * order and re-encodes from whichever interpretation produces valid UTF-8;
-     * already-valid UTF-8 input is returned unchanged.
+     * Excel saved-as-CSV on a Turkish Windows locale writes bytes in
+     * Windows-1254, which corrupt Eloquent's json_encode cast for
+     * `detected_headers`. Already-valid UTF-8 is returned unchanged; anything
+     * else is decoded as Windows-1254 (a superset of ISO-8859-9).
+     *
+     * A multi-encoding source list is not used on purpose: mb_convert_encoding
+     * scores the candidates rather than taking the first valid one, so a valid
+     * UTF-8 cell starting with "Ş" (bytes C5 9E, also valid Windows-1252) was
+     * re-encoded as "Åž", and real Turkish bytes picked Windows-1252 and
+     * turned ş/ğ/ı into þ/ð/ý.
      *
      * @param  list<string|null>  $row
      * @return list<string|null>
@@ -244,8 +249,8 @@ class FileReaderService
     private function normalizeCsvRow(array $row): array
     {
         return array_map(
-            fn ($v) => is_string($v)
-                ? mb_convert_encoding($v, 'UTF-8', 'UTF-8, Windows-1252, ISO-8859-9, ISO-8859-1')
+            fn ($v) => is_string($v) && ! mb_check_encoding($v, 'UTF-8')
+                ? mb_convert_encoding($v, 'UTF-8', 'Windows-1254')
                 : $v,
             $row,
         );
