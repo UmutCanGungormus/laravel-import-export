@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CSV cells starting with "Ş" are no longer corrupted.** `FileReaderService`
+  re-encoded every CSV cell with a multi-encoding source list, which mbstring
+  scores rather than tries in order, so a valid UTF-8 cell such as
+  "Şirket Yöneticisi" came out as "Åžirket YÃ¶neticisi". Valid UTF-8 cells are
+  now left untouched.
+- Non-UTF-8 CSV files are decoded as Windows-1254 (Turkish, a superset of
+  ISO-8859-9) instead of Windows-1252, so ş/ğ/ı no longer become þ/ð/ý.
+
 ## [1.1.0] - 2026-09-08
 
 ### Added
