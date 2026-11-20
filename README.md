@@ -173,6 +173,7 @@ Progress, failures, and status are tracked on the `ImportSession` model througho
 | `tenancy.resolver` | Your `TenantResolverContract` implementation | `NullTenantResolver` |
 | `routes.enabled` / `prefix` / `middleware` | Opt-in HTTP layer | `false` / `api/import-export` / `['api']` |
 | `gates.*` | Names of the authorization abilities to check | namespaced strings |
+| `user_key_type` | Column type of `user_id`: `bigint`, `uuid`, `ulid` or `string` (match your users table) | `bigint` |
 | `models` | The model registry (you fill this in) | empty |
 
 ### A note on non-local disks

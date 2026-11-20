@@ -18,7 +18,7 @@ class ImportMappingTemplateService
      * Get all templates visible to the given user (+ tenant-wide templates).
      */
     public function getUserTemplates(
-        ?int $userId,
+        int|string|null $userId,
         ?string $importableType = null,
         int|string|null $tenantId = null,
     ): Collection {
@@ -52,7 +52,7 @@ class ImportMappingTemplateService
      * Get the user's default template for a model, or null if none.
      */
     public function getDefaultTemplate(
-        ?int $userId,
+        int|string|null $userId,
         string $importableType,
         int|string|null $tenantId = null,
     ): ?ImportMappingTemplate {

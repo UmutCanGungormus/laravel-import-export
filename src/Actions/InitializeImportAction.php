@@ -18,7 +18,7 @@ class InitializeImportAction
         private TenantResolverContract $tenantResolver,
     ) {}
 
-    public function execute(InitializeImportData $data, ?int $userId = null): ImportSession
+    public function execute(InitializeImportData $data, int|string|null $userId = null): ImportSession
     {
         // DTO can override the tenant id; otherwise pull from the resolver.
         $tenantId = $data->tenant_id ?? $this->tenantResolver->currentTenantId();

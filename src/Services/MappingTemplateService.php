@@ -20,7 +20,7 @@ class MappingTemplateService
         private ImportMappingTemplateService $templateService,
     ) {}
 
-    public function list(?int $userId, ?string $importableType = null, int|string|null $tenantId = null): Collection
+    public function list(int|string|null $userId, ?string $importableType = null, int|string|null $tenantId = null): Collection
     {
         return $this->templateService->getUserTemplates($userId, $importableType, $tenantId);
     }
@@ -30,7 +30,7 @@ class MappingTemplateService
         return ImportMappingTemplate::findOrFail($id);
     }
 
-    public function create(CreateTemplateData $data, ?int $userId, int|string|null $tenantId): ImportMappingTemplate
+    public function create(CreateTemplateData $data, int|string|null $userId, int|string|null $tenantId): ImportMappingTemplate
     {
         return $this->createTemplateAction->execute($data, $userId, $tenantId);
     }

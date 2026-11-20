@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-21
+
+### Added
+
+- **Non-integer user keys.** New `user_key_type` config (`bigint` default, `uuid`, `ulid`,
+  `string`) sets the `user_id` column type on the sessions and templates tables, and every
+  `$userId` parameter now accepts `int|string|null`, so hosts whose users have uuid / ulid
+  primary keys can record the importing user. Existing installs keep `bigint`.
+
 ## [1.2.0] - 2026-11-21
 
 ### Added

@@ -9,7 +9,7 @@ class CreateTemplateAction
 {
     public function execute(
         CreateTemplateData $data,
-        ?int $userId,
+        int|string|null $userId,
         int|string|null $tenantId,
     ): ImportMappingTemplate {
         $template = ImportMappingTemplate::create([

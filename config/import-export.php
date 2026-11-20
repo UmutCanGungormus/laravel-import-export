@@ -35,6 +35,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | User Key Type
+    |--------------------------------------------------------------------------
+    |
+    | Column type of `user_id` on the sessions and templates tables, matching
+    | the host's users primary key: `bigint` (default), `uuid`, `ulid` or
+    | `string`. Set it before running the migrations.
+    */
+
+    'user_key_type' => env('IMPORT_EXPORT_USER_KEY_TYPE', 'bigint'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Foreign Keys
     |--------------------------------------------------------------------------
     |

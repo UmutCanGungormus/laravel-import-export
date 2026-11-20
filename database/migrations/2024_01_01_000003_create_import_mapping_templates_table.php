@@ -15,7 +15,13 @@ return new class extends Migration
         Schema::create($table, function (Blueprint $blueprint) use ($usersTable, $useUsersFk) {
             $blueprint->id();
 
-            $blueprint->unsignedBigInteger('user_id')->nullable();
+            // Host's user primary key type: bigint (default) | uuid | ulid | string.
+            match (config('import-export.user_key_type', 'bigint')) {
+                'uuid' => $blueprint->uuid('user_id')->nullable(),
+                'ulid' => $blueprint->ulid('user_id')->nullable(),
+                'string' => $blueprint->string('user_id')->nullable(),
+                default => $blueprint->unsignedBigInteger('user_id')->nullable(),
+            };
             if ($useUsersFk) {
                 $blueprint->foreign('user_id')
                     ->references('id')

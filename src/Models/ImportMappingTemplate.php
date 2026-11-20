@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 
 /**
  * @property int $id
- * @property int|null $user_id
+ * @property int|string|null $user_id
  * @property int|string|null $tenant_id
  * @property string $importable_type
  * @property string $template_name

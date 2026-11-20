@@ -37,7 +37,7 @@ class ImportExportService
 
     // ── Import Session ────────────────────────────────────────────────────
 
-    public function listSessions(?int $userId = null, ?string $status = null, int $perPage = 15): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    public function listSessions(int|string|null $userId = null, ?string $status = null, int $perPage = 15): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
         return ImportSession::query()
             ->when($userId !== null, fn ($q) => $q->where('user_id', $userId))
@@ -46,7 +46,7 @@ class ImportExportService
             ->paginate($perPage);
     }
 
-    public function initialize(InitializeImportData $data, ?int $userId = null): ImportSession
+    public function initialize(InitializeImportData $data, int|string|null $userId = null): ImportSession
     {
         return $this->initializeAction->execute($data, $userId);
     }
