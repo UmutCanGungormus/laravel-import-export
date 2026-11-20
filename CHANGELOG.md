@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-21
+
+### Added
+
+- **Laravel 13 support.** `illuminate/*` constraints accept `^13.0`; the test matrix runs
+  Laravel 11, 12 and 13 (Testbench 11 for 13). No code changes were needed.
+
 ## [1.1.1] - 2026-10-18
 
 ### Fixed
